@@ -119,3 +119,23 @@ class FolderRepo(BaseRepo):
                 parts.append(folder.name)
                 current = folder.parent_id
         return "/" + "/".join(reversed(parts))
+
+    async def list_all(self) -> list[FolderDTO]:
+        """列出所有未删除的目录（用于 /tree 总览）。"""
+        async with self.session_factory() as session:
+            result = await session.scalars(
+                select(Folder).where(Folder.deleted_at.is_(None)).order_by(Folder.name)
+            )
+            return [_to_dto(f) for f in result]
+
+    async def search(self, name: str, limit: int = 10) -> list[FolderDTO]:
+        """按名称模糊搜索目录。"""
+        pattern = f"%{name}%"
+        async with self.session_factory() as session:
+            result = await session.scalars(
+                select(Folder)
+                .where(Folder.deleted_at.is_(None), Folder.name.ilike(pattern))
+                .order_by(Folder.name)
+                .limit(limit)
+            )
+            return [_to_dto(f) for f in result]

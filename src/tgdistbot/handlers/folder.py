@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from aiogram import Router
 from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
@@ -76,3 +78,19 @@ async def cmd_rm(message: Message, command: CommandObject, deps: Deps) -> None:
         return
     ok = await deps.repos.media.soft_delete(int(args))
     await message.answer("✅ 已删除（软删除，频道文件保留）" if ok else "❌ 文件不存在")
+
+
+@router.message(Command("purge"), IsAdmin())
+async def cmd_purge(message: Message, deps: Deps) -> None:
+    """一键清除失效索引：遍历所有文件，把频道里已不存在的原消息对应的索引软删除。"""
+    await message.answer("🔍 开始检查索引有效性，请稍候…")
+    items = await deps.repos.media.list_all()
+    removed = 0
+    for idx, item in enumerate(items):
+        if not await deps.storage.message_exists(item.channel_id, item.msg_id):
+            await deps.repos.media.soft_delete(item.id)
+            removed += 1
+        # 简单节流，避免触发 Telegram 限流
+        if (idx + 1) % 25 == 0:
+            await asyncio.sleep(1)
+    await message.answer(f"✅ 检查了 {len(items)} 个索引，清除了 {removed} 个失效索引。")

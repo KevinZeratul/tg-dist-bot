@@ -37,13 +37,20 @@ async def main() -> None:
 
     try:
         await dispatcher.start_polling(bot)
+    except (KeyboardInterrupt, SystemExit):
+        # 用户按 Ctrl+C / 系统要求停止：正常退出，不打印 traceback
+        logging.getLogger(__name__).info("收到停止信号，正在关闭…")
     finally:
         await bot.session.close()
         await engine.dispose()
 
 
 def run() -> None:
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        # Ctrl+C 静默退出（Windows 下 asyncio 会把 KeyboardInterrupt 再抛一次）
+        print("\n已停止。")
 
 
 if __name__ == "__main__":

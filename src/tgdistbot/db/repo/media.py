@@ -126,6 +126,16 @@ class MediaRepo(BaseRepo):
             )
             return [_to_dto(i) for i in result]
 
+    async def list_all(self) -> list[MediaDTO]:
+        """列出所有未删除的文件（用于 /purge 批量检查索引）。"""
+        async with self.session_factory() as session:
+            result = await session.scalars(
+                select(MediaItem)
+                .where(MediaItem.deleted_at.is_(None))
+                .order_by(MediaItem.id)
+            )
+            return [_to_dto(i) for i in result]
+
     async def move(self, item_id: int, folder_id: int | None) -> bool:
         """把文件移到某目录；folder_id 为空/0 表示移回根目录。"""
         async with self.session_factory() as session:

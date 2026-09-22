@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramNetworkError
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
@@ -57,7 +58,11 @@ async def on_media(message: Message, deps: Deps, state: FSMContext) -> None:
     folder_id = await current_folder(state)
 
     # 1) 把消息复制进私有频道（字节留在 Telegram 云端，不受 20MB 限制）
-    channel_id, msg_id = await deps.storage.store(message)
+    try:
+        channel_id, msg_id = await deps.storage.store(message)
+    except TelegramNetworkError:
+        await message.answer("❌ 上传失败（网络问题），请稍后重新发送。")
+        return
 
     # 2) 记录元数据
     meta = extract_media_meta(message)

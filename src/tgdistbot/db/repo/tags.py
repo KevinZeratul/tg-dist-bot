@@ -34,3 +34,12 @@ class TagRepo(BaseRepo):
         async with self.session_factory() as session:
             result = await session.scalars(select(Tag).order_by(Tag.name))
             return [_to_dto(t) for t in result]
+
+    async def search(self, name: str, limit: int = 10) -> list[TagDTO]:
+        """按名称模糊搜索标签。"""
+        pattern = f"%{name}%"
+        async with self.session_factory() as session:
+            result = await session.scalars(
+                select(Tag).where(Tag.name.ilike(pattern)).order_by(Tag.name).limit(limit)
+            )
+            return [_to_dto(t) for t in result]

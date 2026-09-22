@@ -31,6 +31,23 @@ async def _granted_folders(deps: Deps, user_id: int) -> list[FolderDTO]:
     return folders
 
 
+def _build_tree(folders: list[FolderDTO]) -> str:
+    """把扁平目录列表拼成缩进树形文本。"""
+    by_parent: dict[int | None, list[FolderDTO]] = {}
+    for f in folders:
+        by_parent.setdefault(f.parent_id, []).append(f)
+
+    lines: list[str] = []
+
+    def walk(parent: int | None, indent: str) -> None:
+        for f in sorted(by_parent.get(parent, []), key=lambda x: x.name):
+            lines.append(f"{indent}📁 #{f.id} {f.name}")
+            walk(f.id, indent + "    ")
+
+    walk(None, "")
+    return "\n".join(lines) if lines else "（还没有目录）"
+
+
 async def _compose(
     deps: Deps, user_id: int, folder_id: int | None, page: int
 ) -> tuple[str, InlineKeyboardMarkup | None] | None:
@@ -47,11 +64,12 @@ async def _compose(
         )
         has_next = (page + 1) * PAGE_SIZE < total
         path = await deps.repos.folders.get_path(folder_id)
+        page_hint = f" · 第 {page + 1} 页" if total else ""
         text = (
-            f"📂 当前目录：{path}\n"
-            f"子目录 {len(folders)} 个 · 文件 {total} 个\n\n"
-            f"发照片/视频即可上传到本目录。\n"
-            f"/mkdir 新建目录 · /tag 打标 · /search 搜索 · /help 更多"
+            f"📍 当前位置：{path}\n"
+            f"子目录 {len(folders)} 个 · 文件 {total} 个{page_hint}\n\n"
+            f"发照片/视频即上传到本目录。\n"
+            f"/ls 列表 · /tree 总览 · /channel 看媒体 · /search 搜索"
         )
         return text, build_browse_keyboard(folders, files, page, has_next, folder_id)
 
@@ -76,30 +94,43 @@ async def _compose(
         folder_id, offset=page * PAGE_SIZE, limit=PAGE_SIZE
     )
     has_next = (page + 1) * PAGE_SIZE < total
-    text = f"📂 {folder.name}（共享） · 文件 {total} 个"
+    text = f"📍 {folder.name}（共享） · 文件 {total} 个"
     return text, build_browse_keyboard([], files, page, has_next, folder_id)
 
 
-async def _render(cb: CallbackQuery, text: str, kb: InlineKeyboardMarkup | None) -> None:
-    """编辑消息；若内容未变导致 Telegram 拒绝编辑，则回退为发送新消息。"""
-    try:
-        await cb.message.edit_text(text, reply_markup=kb)
-    except TelegramBadRequest:
-        await cb.message.answer(text, reply_markup=kb)
+async def _render_browse(
+    deps: Deps,
+    user_id: int,
+    chat_id: int,
+    folder_id: int | None,
+    page: int,
+    edit: Message | None,
+) -> bool:
+    """渲染一页浏览（发或编辑导航消息）。返回是否有权限。"""
+    composed = await _compose(deps, user_id, folder_id, page)
+    if composed is None:
+        return False
+    text, kb = composed
+
+    if edit is not None:
+        try:
+            await edit.edit_text(text, reply_markup=kb)
+        except TelegramBadRequest:
+            await deps.bot.send_message(chat_id, text, reply_markup=kb)
+    else:
+        await deps.bot.send_message(chat_id, text, reply_markup=kb)
+    return True
 
 
 # —— 命令 ——
 
 
-@router.message(Command("files"))
+@router.message(Command("files", "ls"))
 async def cmd_files(message: Message, deps: Deps, state: FSMContext) -> None:
     folder_id = await current_folder(state)
-    composed = await _compose(deps, message.from_user.id, folder_id, 0)
-    if composed is None:
+    ok = await _render_browse(deps, message.from_user.id, message.chat.id, folder_id, 0, None)
+    if not ok:
         await message.answer("❌ 没有可访问的内容。")
-        return
-    text, kb = composed
-    await message.answer(text, reply_markup=kb)
 
 
 @router.message(Command("cd"), IsAdmin())
@@ -117,12 +148,9 @@ async def cmd_cd(
             await message.answer("❌ 目录不存在。")
             return
     await state.update_data(folder_id=folder_id, page=0)
-    composed = await _compose(deps, message.from_user.id, folder_id, 0)
-    if composed is None:
+    ok = await _render_browse(deps, message.from_user.id, message.chat.id, folder_id, 0, None)
+    if not ok:
         await message.answer("❌ 没有可访问的内容。")
-        return
-    text, kb = composed
-    await message.answer(text, reply_markup=kb)
 
 
 @router.message(Command("up"), IsAdmin())
@@ -133,12 +161,15 @@ async def cmd_up(message: Message, deps: Deps, state: FSMContext) -> None:
     if folder is not None and folder.parent_id is not None:
         parent = folder.parent_id
     await state.update_data(folder_id=parent, page=0)
-    composed = await _compose(deps, message.from_user.id, parent, 0)
-    if composed is None:
+    ok = await _render_browse(deps, message.from_user.id, message.chat.id, parent, 0, None)
+    if not ok:
         await message.answer("❌ 没有可访问的内容。")
-        return
-    text, kb = composed
-    await message.answer(text, reply_markup=kb)
+
+
+@router.message(Command("tree"), IsAdmin())
+async def cmd_tree(message: Message, deps: Deps) -> None:
+    folders = await deps.repos.folders.list_all()
+    await message.answer("🌳 目录结构（#id 可用于 /cd 进入）：\n\n" + _build_tree(folders))
 
 
 # —— 回调 ——
@@ -152,11 +183,10 @@ async def cb_open(
     folder_id = callback_data.folder_id if callback_data.folder_id is not None else ROOT_FOLDER_ID
     if is_admin(deps, user_id):
         await state.update_data(folder_id=folder_id, page=0)
-    composed = await _compose(deps, user_id, folder_id, 0)
-    if composed is None:
+    ok = await _render_browse(deps, user_id, cb.message.chat.id, folder_id, 0, cb.message)
+    if not ok:
         await cb.answer("❌ 无权限访问该目录", show_alert=True)
         return
-    await _render(cb, *composed)
     await cb.answer()
 
 
@@ -176,11 +206,10 @@ async def cb_back(
     else:
         # 共享用户点「返回上级」= 回到被授权目录列表
         target = ROOT_FOLDER_ID
-    composed = await _compose(deps, user_id, target, 0)
-    if composed is None:
+    ok = await _render_browse(deps, user_id, cb.message.chat.id, target, 0, cb.message)
+    if not ok:
         await cb.answer("❌ 无权限", show_alert=True)
         return
-    await _render(cb, *composed)
     await cb.answer()
 
 
@@ -188,11 +217,12 @@ async def cb_back(
 async def cb_page(cb: CallbackQuery, callback_data: NavCB, deps: Deps) -> None:
     user_id = cb.from_user.id
     folder_id = callback_data.folder_id if callback_data.folder_id is not None else ROOT_FOLDER_ID
-    composed = await _compose(deps, user_id, folder_id, callback_data.page)
-    if composed is None:
+    ok = await _render_browse(
+        deps, user_id, cb.message.chat.id, folder_id, callback_data.page, cb.message
+    )
+    if not ok:
         await cb.answer("❌ 无权限", show_alert=True)
         return
-    await _render(cb, *composed)
     await cb.answer()
 
 
@@ -213,5 +243,14 @@ async def cb_send(cb: CallbackQuery, callback_data: NavCB, deps: Deps) -> None:
             await cb.answer("❌ 无权限", show_alert=True)
             return
 
-    await deps.storage.retrieve(user_id, item.channel_id, item.msg_id)
+    try:
+        await deps.storage.retrieve(user_id, item.channel_id, item.msg_id)
+    except TelegramBadRequest as exc:
+        # 频道里的原消息被手动删掉了 → 索引失效，清除它
+        if "not found" in str(exc.message).lower():
+            await deps.repos.media.soft_delete(item.id)
+            await cb.answer("⚠️ 该文件在频道里已被删除，索引已清除。", show_alert=True)
+        else:
+            await cb.answer("❌ 发送失败，请稍后重试。", show_alert=True)
+        return
     await cb.answer("✅ 已发送")

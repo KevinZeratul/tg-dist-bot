@@ -85,11 +85,25 @@ async def cmd_find(message: Message, command: CommandObject, deps: Deps) -> None
 async def cmd_search(message: Message, command: CommandObject, deps: Deps) -> None:
     query = (command.args or "").strip()
     if not query:
-        await message.answer("用法：/search <关键词>")
+        await message.answer("用法：/search <关键词>（同时搜文件名、文件夹名、标签）")
         return
-    items = await deps.repos.media.search(query, limit=PAGE_SIZE)
-    if not items:
-        await message.answer(f"没有找到包含「{query}」的文件。")
+    files = await deps.repos.media.search(query, limit=PAGE_SIZE)
+    folders = await deps.repos.folders.search(query, limit=PAGE_SIZE)
+    tags = await deps.repos.tags.search(query, limit=PAGE_SIZE)
+    if not (files or folders or tags):
+        await message.answer(f"没有找到与「{query}」相关的结果。")
         return
-    lines = [f"#{i.id} {i.filename or i.mime_type or '文件'}" for i in items]
-    await message.answer("🔍 结果：\n" + "\n".join(lines))
+
+    blocks: list[str] = []
+    if folders:
+        blocks.append(
+            "📁 目录（/cd <id> 进入）：\n"
+            + "\n".join(f"#{f.id} {f.name}" for f in folders)
+        )
+    if files:
+        blocks.append("🖼 文件（/mv /rm /tag 操作）：\n" + "\n".join(
+            f"#{i.id} {i.filename or i.mime_type or '文件'}" for i in files
+        ))
+    if tags:
+        blocks.append("🏷 标签（/find <标签> 看文件）：\n" + "\n".join(t.name for t in tags))
+    await message.answer(f"🔍 「{query}」的结果：\n\n" + "\n\n".join(blocks))

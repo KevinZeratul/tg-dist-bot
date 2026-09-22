@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import logging
+
 from aiogram import Dispatcher
+from aiogram.exceptions import TelegramNetworkError
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types.error_event import ErrorEvent
 
 from .deps import Deps
 from .handlers import browse, folder, share, start, tag, upload
 from .middleware import DepsMiddleware
+
+logger = logging.getLogger(__name__)
 
 
 def build_dispatcher(deps: Deps) -> Dispatcher:
@@ -26,5 +32,14 @@ def build_dispatcher(deps: Deps) -> Dispatcher:
         share.router,
     ):
         dp.include_router(router)
+
+    @dp.errors()
+    async def errors_handler(error: ErrorEvent) -> None:
+        """全局兜底：网络错误只记一条日志，不刷 traceback，程序继续跑。"""
+        exception = error.exception
+        if isinstance(exception, TelegramNetworkError):
+            logger.warning("网络错误：%s", exception)
+        else:
+            logger.error("未处理异常：%s", exception, exc_info=exception)
 
     return dp

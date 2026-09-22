@@ -61,6 +61,16 @@ async def test_dispatcher_routing_and_auth(tmp_path):
         # 3) owner 调用 /mkdir 应被放行
         allowed = await _feed(bot, dp, _update(42, "/mkdir 旅行"))
         assert allowed.called
+
+        # 4) 网络错误应被全局 error handler 兜底（不因签名错误崩掉）
+        from aiogram.exceptions import TelegramNetworkError
+
+        with patch.object(
+            Bot,
+            "__call__",
+            AsyncMock(side_effect=TelegramNetworkError(method=None, message="boom")),
+        ):
+            await dp.feed_update(bot, _update(42, "/help"))
     finally:
         await bot.session.close()
         await engine.dispose()
